@@ -1,5 +1,5 @@
 name: release-binaries
-
+ 
 on:
   pull_request:
     branches:
@@ -26,20 +26,20 @@ on:
       - ".patch/**"
       - "cpmfile.json"
       - ".github/workflows/release-binaries.yml"
-
+ 
 permissions:
   contents: read
-
+ 
 # Clang major the Linux PGO build uses, from apt.llvm.org. Eden's profile is written by a current
 # clang and an older reader refuses it, so this has to stay at or above whatever produced
 # eden.profdata; bump it when a refreshed profile needs a newer LLVM.
 env:
   PGO_LLVM_VERSION: '23'
-
+ 
 concurrency:
   group: release-binaries-${{ github.ref }}
   cancel-in-progress: true
-
+ 
 jobs:
   # Every build is named <channel>-build-<run number>: its release tag, its version string, and the
   # prefix of its release files. The channel is the branch, or pr-<number> for pull requests, which
@@ -63,7 +63,7 @@ jobs:
           fi
           echo "channel=$channel" >> "$GITHUB_OUTPUT"
           echo "tag=$channel-build-$GITHUB_RUN_NUMBER" >> "$GITHUB_OUTPUT"
-
+ 
   build:
     name: ${{ matrix.platform }} binary
     needs: name
@@ -94,16 +94,30 @@ jobs:
             runner: windows-2022
             pgo: true
             mingw: true
+          # Tuned variants: AVX2-class code (-march=x86-64-v3, needs a 2013+ Intel / 2015+ AMD
+          # CPU) and the PGO profile recorded on this fork's own code (eglantine.profdata) instead
+          # of Eden's, so the GPU-thread and macro-JIT hot paths are optimised from real data.
+          - platform: linux-x86_64-pgo-v3
+            runner: ubuntu-24.04
+            pgo: true
+            preset: v3
+            own_profile: true
+          - platform: windows-x86_64-pgo-v3
+            runner: windows-2022
+            pgo: true
+            mingw: true
+            preset: v3
+            own_profile: true
           - platform: linux-aarch64
             runner: ubuntu-24.04-arm
           - platform: linux-aarch64-pgo
             runner: ubuntu-24.04-arm
             pgo: true
-
+ 
     steps:
       - name: Check out source
         uses: actions/checkout@v4
-
+ 
       - name: Install Linux dependencies
         if: startsWith(matrix.platform, 'linux')
         shell: bash
@@ -118,7 +132,7 @@ jobs:
             spirv-tools spirv-headers libusb-1.0-0-dev \
             libboost-dev libboost-fiber-dev libboost-context-dev \
             libopus-dev libasound2-dev ccache
-
+ 
       - name: Install Qt on Linux x86_64
         if: startsWith(matrix.platform, 'linux') && runner.arch != 'ARM64'
         uses: jurplel/install-qt-action@v4
@@ -129,7 +143,7 @@ jobs:
           arch: linux_gcc_64
           modules: qtcharts
           cache: true
-
+ 
       - name: Install Qt on Linux ARM64
         if: startsWith(matrix.platform, 'linux') && runner.arch == 'ARM64'
         uses: jurplel/install-qt-action@v4
@@ -140,7 +154,7 @@ jobs:
           arch: linux_gcc_arm64
           modules: qtcharts
           cache: true
-
+ 
       - name: Install macOS dependencies
         if: runner.os == 'macOS'
         shell: bash
@@ -149,7 +163,7 @@ jobs:
           brew install autoconf automake boost ccache cmake ffmpeg fmt glslang \
             libtool libusb lz4 ninja nlohmann-json openssl@3 pkgconf sdl3 \
             speexdsp zlib zstd
-
+ 
       - name: Install Qt on macOS
         if: runner.os == 'macOS'
         uses: jurplel/install-qt-action@v4
@@ -160,7 +174,7 @@ jobs:
           arch: clang_64
           modules: qtcharts
           cache: true
-
+ 
       # Ubuntu's own clang 18 cannot read a profile from a current LLVM, so take clang from the LLVM
       # apt repo. The versioned packages are named explicitly: that repo's unversioned clang/lld
       # metapackages can lag the binaries they depend on and then resolve to nothing. lld-23 only
@@ -178,22 +192,30 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             "clang-$PGO_LLVM_VERSION" "lld-$PGO_LLVM_VERSION"
           "clang-$PGO_LLVM_VERSION" --version
-
+ 
       # Fetched into the source tree so both the Linux and MSYS2 configure steps can read it from a
       # path their clang understands.
+      - name: Use the fork's own PGO profile
+        if: matrix.own_profile
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp eglantine.profdata eden.profdata
+          test -s eden.profdata
+ 
       - name: Download PGO profile
-        if: matrix.pgo
+        if: matrix.pgo && !matrix.own_profile
         shell: bash
         run: |
           set -euo pipefail
           curl -fsSL -o eden.profdata \
             https://github.com/Eden-CI/PGO/releases/latest/download/eden.profdata
           test -s eden.profdata
-
+ 
       - name: Set up MSVC
         if: matrix.platform == 'windows-x86_64'
         uses: ilammy/msvc-dev-cmd@v1
-
+ 
       - name: Install Qt on Windows
         if: matrix.platform == 'windows-x86_64'
         uses: jurplel/install-qt-action@v4
@@ -204,7 +226,7 @@ jobs:
           arch: win64_msvc2022_64
           modules: qtcharts
           cache: true
-
+ 
       # MSVC is not something ccache handles well, so that job uses sccache. The other jobs use
       # ccache, which CMake enables through USE_CCACHE (externals/cmake-modules/UseCcache.cmake).
       - name: Install sccache on Windows
@@ -216,17 +238,17 @@ jobs:
           Expand-Archive $zip -DestinationPath (Join-Path $env:RUNNER_TEMP 'sccache')
           $bin = (Get-ChildItem -Recurse -Filter sccache.exe (Join-Path $env:RUNNER_TEMP 'sccache')).DirectoryName
           $bin | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
-
+ 
       - name: Install Vulkan SDK on Windows
         if: matrix.platform == 'windows-x86_64'
         shell: pwsh
         run: ./tools/windows/install-vulkan-sdk.ps1
-
+ 
       - name: Verify Vulkan tools on Windows
         if: matrix.platform == 'windows-x86_64'
         shell: pwsh
         run: glslangValidator --version
-
+ 
       # Eden builds its Windows PGO binaries with MSYS2's clang toolchain, so we do the same. The
       # package list is docs/Deps.md (MSYS2) plus what the bundled FFmpeg needs to compile.
       - name: Set up MSYS2
@@ -244,7 +266,7 @@ jobs:
             vulkan-memory-allocator:p vulkan-devel:p glslang:p enet:p opus:p
             libusb:p unordered_dense:p jbigkit:p xz:p libdeflate:p bzip2:p
             lerc:p graphite2:p libwebp:p libtiff:p brotli:p ccache:p
-
+ 
       - name: Cache CPM downloads
         uses: actions/cache@v4
         with:
@@ -252,7 +274,7 @@ jobs:
           key: cpm-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('cpmfile.json', 'CMakeLists.txt', 'src/**/CMakeLists.txt') }}
           restore-keys: |
             cpm-${{ runner.os }}-${{ runner.arch }}-
-
+ 
       # The sha in the key makes every run save a fresh cache (actions/cache never saves over an
       # exact hit), and restore-keys seeds it from the newest one of the same platform.
       - name: Cache compiler objects
@@ -264,7 +286,7 @@ jobs:
           key: objects-${{ matrix.platform }}-${{ github.sha }}
           restore-keys: |
             objects-${{ matrix.platform }}-
-
+ 
       - name: Configure Linux
         if: startsWith(matrix.platform, 'linux')
         shell: bash
@@ -289,6 +311,9 @@ jobs:
             -DUSE_DISCORD_PRESENCE=OFF
             -DUSE_CCACHE=ON
           )
+          if [ -n '${{ matrix.preset }}' ]; then
+            flags+=("-DYUZU_BUILD_PRESET=${{ matrix.preset }}")
+          fi
           if [ '${{ matrix.pgo }}' = 'true' ]; then
             # Same flags Eden's CI passes for its clang PGO build.
             profile="-fprofile-use=$PWD/eden.profdata -Wno-backend-plugin \
@@ -302,7 +327,7 @@ jobs:
             )
           fi
           cmake -S . -B build/release -G Ninja "${flags[@]}"
-
+ 
       - name: Configure macOS ARM
         if: runner.os == 'macOS'
         shell: bash
@@ -329,7 +354,7 @@ jobs:
           "-DEGLANTINE_BUILD_PLATFORM=${{ matrix.platform }}"
           -DUSE_DISCORD_PRESENCE=OFF
           -DUSE_CCACHE=ON
-
+ 
       - name: Configure Windows
         if: matrix.platform == 'windows-x86_64'
         shell: bash
@@ -350,7 +375,7 @@ jobs:
           -DUSE_DISCORD_PRESENCE=OFF
           -DCMAKE_C_COMPILER_LAUNCHER=sccache
           -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
-
+ 
       # MinGW build: system Qt and libraries from MSYS2, clang plus Eden's PGO profile. The profile
       # path is converted to its Windows form because clang runs with the MSYS mount underneath.
       - name: Configure MinGW PGO
@@ -360,7 +385,12 @@ jobs:
           set -euo pipefail
           profile="-fprofile-use=$(cygpath -m "$PWD/eden.profdata") -Wno-backend-plugin \
             -Wno-profile-instr-unprofiled -Wno-profile-instr-out-of-date"
+          preset_flag=()
+          if [ -n '${{ matrix.preset }}' ]; then
+            preset_flag=("-DYUZU_BUILD_PRESET=${{ matrix.preset }}")
+          fi
           cmake -S . -B build/release -G Ninja \
+            "${preset_flag[@]}" \
             -DCMAKE_BUILD_TYPE=Release \
             -DBUILD_TESTING=OFF \
             -DYUZU_TESTS=OFF \
@@ -383,41 +413,41 @@ jobs:
             -DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=lld \
             "-DCMAKE_C_FLAGS=$profile" \
             "-DCMAKE_CXX_FLAGS=$profile"
-
+ 
       - name: Build
         if: ${{ ! matrix.mingw && runner.os != 'macOS' }}
         shell: bash
         run: |
           cmake --build build/release --target yuzu yuzu-cmd --parallel
           if command -v ccache > /dev/null; then ccache --show-stats; else sccache --show-stats; fi
-
+ 
       - name: Build macOS ARM
         if: runner.os == 'macOS'
         shell: bash
         run: |
           cmake --build build/release --target yuzu yuzu-cmd --parallel 2 -- -k 0
           ccache --show-stats
-
+ 
       - name: Package and verify macOS app
         if: runner.os == 'macOS'
         shell: bash
         run: >-
           sh tools/macos/package.sh build/release "$ASSET_NAME.zip"
-
+ 
       - name: Build MinGW PGO
         if: matrix.mingw
         shell: msys2 {0}
         run: |
           cmake --build build/release --target yuzu yuzu-cmd --parallel
           ccache --show-stats
-
+ 
       - name: Stage third-party license notices
         if: runner.os != 'macOS'
         shell: bash
         run: |
           mkdir -p build/release/bin/licenses
           cp -R dist/licenses/. build/release/bin/licenses/
-
+ 
       - name: Package Linux tar.gz
         if: startsWith(matrix.platform, 'linux')
         shell: bash
@@ -428,7 +458,7 @@ jobs:
           strip build/release/bin/eglantine build/release/bin/eden-cli
           tar -czf "$ASSET_NAME.tar.gz" -C build/release/bin eglantine eden-cli licenses
           test -s "$ASSET_NAME.tar.gz"
-
+ 
       # A self-contained AppImage: linuxdeploy bundles every library the two programs need except
       # the base system ones (glibc, X11/Wayland client libraries, the GPU driver and Vulkan loader),
       # and its Qt plugin adds the Qt libraries and platform plugins. Runs on glibc 2.39+ systems.
@@ -469,7 +499,7 @@ jobs:
             --output appimage
           test -s "$LDAI_OUTPUT"
           ls -la "$LDAI_OUTPUT"
-
+ 
       - name: Package Windows binary
         if: matrix.platform == 'windows-x86_64'
         shell: pwsh
@@ -480,7 +510,7 @@ jobs:
             }
           }
           windeployqt --release --no-translations build/release/bin/eglantine.exe
-
+ 
       # A dynamic MinGW build is not portable on its own: windeployqt6 brings the Qt libraries and
       # plugins, then every non-system DLL the binaries and those plugins pull in gets copied next to
       # them (docs/Caveats.md#msys2).
@@ -516,7 +546,7 @@ jobs:
           find . -name '*.dll' | while read -r dll; do
             deps "$dll"
           done
-
+ 
       # The artifact is the bin folder itself: GitHub zips artifacts on download, and uploading a
       # zip gave a zip inside a zip. The release job zips it once for the release.
       - name: Upload Windows binary
@@ -527,7 +557,7 @@ jobs:
           path: build/release/bin/
           if-no-files-found: error
           retention-days: 7
-
+ 
       - name: Upload MinGW binary
         if: matrix.mingw
         uses: actions/upload-artifact@v4
@@ -536,7 +566,7 @@ jobs:
           path: build/release/bin/
           if-no-files-found: error
           retention-days: 7
-
+ 
       - name: Upload Linux binary
         if: startsWith(matrix.platform, 'linux')
         uses: actions/upload-artifact@v4
@@ -548,7 +578,7 @@ jobs:
           if-no-files-found: error
           compression-level: 0
           retention-days: 7
-
+ 
       - name: Upload macOS binary
         if: runner.os == 'macOS'
         uses: actions/upload-artifact@v4
@@ -558,7 +588,7 @@ jobs:
           if-no-files-found: error
           compression-level: 0
           retention-days: 7
-
+ 
       - name: Save macOS compiler cache after failure
         if: failure() && runner.os == 'macOS'
         uses: actions/cache/save@v4
@@ -567,7 +597,7 @@ jobs:
             .ccache
             .sccache
           key: objects-${{ matrix.platform }}-${{ github.sha }}
-
+ 
   # Publishes every binary as a GitHub pre-release once every platform built: on pushes to nx2
   # and nx2-experimental, and on manual runs unless "Publish the binaries as a GitHub release" is
   # unticked.
@@ -584,7 +614,7 @@ jobs:
         with:
           pattern: eglantine-${{ needs.name.outputs.tag }}-*
           path: artifacts
-
+ 
       - name: Package release files
         shell: bash
         run: |
@@ -600,7 +630,7 @@ jobs:
               (cd "$artifact" && zip -qr "${GITHUB_WORKSPACE}/dist/${name}.zip" .)
             fi
           done
-
+ 
       # The notes list the commits since the channel's previous release; the app shows users the
       # commits since their own build.
       - name: Create release
@@ -624,13 +654,13 @@ jobs:
             fi
             cat <<'EOF'
           ## Install
-
+ 
           Windows: extract the zip and run eglantine.exe, or eden-cli.exe from a terminal.
           Linux (AppImage): make it executable (chmod +x) and run it; it bundles its libraries and needs glibc 2.39 or newer (Ubuntu 24.04, Fedora 40, Debian 13, Arch).
           Linux (tar.gz): extract it and run ./eglantine or ./eden-cli; it uses your system libraries, so Qt 6 and the usual libraries must be installed.
           macOS: Apple Silicon and macOS 15 or newer. Extract the zip and move eglantine.app to Applications. The CLI is inside eglantine.app/Contents/MacOS/eden-cli. The app bundles Qt and MoltenVK and is ad-hoc signed, not notarized; macOS may require approval in Privacy & Security. macOS support remains experimental and uses the JIT, not NCE.
-          The -pgo builds are the same programs compiled with profile-guided optimization (clang plus Eden's profile); prefer them when your CPU supports it. The Windows PGO build is a MinGW build, so it carries its own DLLs and needs no Visual C++ redistributable.
-
+          The -pgo builds are the same programs compiled with profile-guided optimization (clang plus Eden's profile); prefer them when your CPU supports it. The Windows PGO build is a MinGW build, so it carries its own DLLs and needs no Visual C++ redistributable. The -pgo-v3 builds add AVX2-class code generation (x86-64-v3, Intel Haswell / AMD Excavator or newer) and use a profile recorded on this fork's own code; they are the fastest option when your CPU supports them, and they will not start on older CPUs.
+ 
           Eglantine looks for newer builds of its channel at startup and from Help > Check for Updates.
           EOF
           } > notes.md
@@ -640,3 +670,4 @@ jobs:
             --prerelease \
             --title "Eglantine $CHANNEL build $GITHUB_RUN_NUMBER (${GITHUB_SHA::7})" \
             --notes-file notes.md
+ 
